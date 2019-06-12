@@ -1,0 +1,308 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-nginx-internal
+  labels:
+    app.kubernetes.io/name: ingress-nginx-internal
+    app.kubernetes.io/part-of: ingress-nginx-internal
+
+---
+
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: nginx-configuration
+  namespace: ingress-nginx-internal
+  labels:
+    app.kubernetes.io/name: ingress-nginx-internal
+    app.kubernetes.io/part-of: ingress-nginx-internal
+
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: tcp-services
+  namespace: ingress-nginx-internal
+  labels:
+    app.kubernetes.io/name: ingress-nginx-internal
+    app.kubernetes.io/part-of: ingress-nginx-internal
+
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: udp-services
+  namespace: ingress-nginx-internal
+  labels:
+    app.kubernetes.io/name: ingress-nginx-internal
+    app.kubernetes.io/part-of: ingress-nginx-internal
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nginx-ingress-internal-serviceaccount
+  namespace: ingress-nginx-internal
+  labels:
+    app.kubernetes.io/name: ingress-nginx-internal
+    app.kubernetes.io/part-of: ingress-nginx-internal
+
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRole
+metadata:
+  name: nginx-ingress-internal-clusterrole
+  labels:
+    app.kubernetes.io/name: ingress-nginx-internal
+    app.kubernetes.io/part-of: ingress-nginx-internal
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - endpoints
+      - nodes
+      - pods
+      - secrets
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - "extensions"
+    resources:
+      - ingresses
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+  - apiGroups:
+      - "extensions"
+    resources:
+      - ingresses/status
+    verbs:
+      - update
+
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: Role
+metadata:
+  name: nginx-ingress-internal-role
+  namespace: ingress-nginx-internal
+  labels:
+    app.kubernetes.io/name: ingress-nginx-internal
+    app.kubernetes.io/part-of: ingress-nginx-internal
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - pods
+      - secrets
+      - namespaces
+    verbs:
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      # Defaults to "<election-id>-<ingress-class>"
+      # Here: "<ingress-controller-leader>-<nginx>"
+      # This has to be adapted if you change either parameter
+      # when launching the nginx-ingress-controller.
+      - "ingress-controller-leader-internal"
+    verbs:
+      - get
+      - update
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - create
+  - apiGroups:
+      - ""
+    resources:
+      - endpoints
+    verbs:
+      - get
+
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: RoleBinding
+metadata:
+  name: nginx-ingress-internal-role-nisa-binding
+  namespace: ingress-nginx-internal
+  labels:
+    app.kubernetes.io/name: ingress-nginx-internal
+    app.kubernetes.io/part-of: ingress-nginx-internal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nginx-ingress-internal-role
+subjects:
+  - kind: ServiceAccount
+    name: nginx-ingress-internal-serviceaccount
+    namespace: ingress-nginx-internal
+
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: nginx-ingress-internal-clusterrole-nisa-binding
+  labels:
+    app.kubernetes.io/name: ingress-nginx-internal
+    app.kubernetes.io/part-of: ingress-nginx-internal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nginx-ingress-internal-clusterrole
+subjects:
+  - kind: ServiceAccount
+    name: nginx-ingress-internal-serviceaccount
+    namespace: ingress-nginx-internal
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-ingress-controller
+  namespace: ingress-nginx-internal
+  labels:
+    app.kubernetes.io/name: ingress-nginx-internal
+    app.kubernetes.io/part-of: ingress-nginx-internal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx-internal
+      app.kubernetes.io/part-of: ingress-nginx-internal
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ingress-nginx-internal
+        app.kubernetes.io/part-of: ingress-nginx-internal
+      annotations:
+        prometheus.io/port: "10254"
+        prometheus.io/scrape: "true"
+    spec:
+      serviceAccountName: nginx-ingress-internal-serviceaccount
+      imagePullSecrets:
+      - name: regcred
+      containers:
+        - name: nginx-ingress-controller
+          image: hub.tencentyun.com/playerid/nginx-ingress-controller:0.24.1
+          args:
+            - /nginx-ingress-controller
+            - --ingress-class=internal
+            - --configmap=$(POD_NAMESPACE)/nginx-configuration
+            - --tcp-services-configmap=$(POD_NAMESPACE)/tcp-services
+            - --udp-services-configmap=$(POD_NAMESPACE)/udp-services
+            - --publish-service=$(POD_NAMESPACE)/ingress-nginx-internal
+            - --annotations-prefix=kubernetes.io
+            - --default-backend-service=$(POD_NAMESPACE)/default-http-backend
+            - --enable-ssl-passthrough
+          securityContext:
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+            # www-data -> 33
+            runAsUser: 33
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: http
+              containerPort: 80
+            - name: https
+              containerPort: 443
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /healthz
+              port: 10254
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 10
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /healthz
+              port: 10254
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 10
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: default-http-backend
+  labels:
+    app: default-http-backend
+  namespace: ingress-nginx-internal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: default-http-backend
+  template:
+    metadata:
+      labels:
+        app: default-http-backend
+    spec:
+      terminationGracePeriodSeconds: 60
+      imagePullSecrets:
+      - name: regcred
+      containers:
+      - name: default-http-backend
+        image:  hub.tencentyun.com/playerid/defaultbackend:1.4
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: 10m
+            memory: 20Mi
+          requests:
+            cpu: 10m
+            memory: 20Mi
